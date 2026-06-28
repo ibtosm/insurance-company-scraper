@@ -1,4 +1,4 @@
-# app/parsers/axa_parser.py
+# app/parsers/aflac_parser.py
 
 from bs4 import BeautifulSoup
 
@@ -20,35 +20,18 @@ def parse_news(
     soup = BeautifulSoup(html, "html.parser")
     results: list[NewsItem] = []
 
-    # AXA のニュース一覧は ul[class^="News__Table"] に入っている
-    news_list = soup.find("ul", class_=lambda c: c and c.startswith("News__Table"))
-    if not news_list:
+    # Aflac のニュース一覧は article.news__article
+    articles = soup.select("article.news__article")
+    if not articles:
         return results
 
-    # 年を取得
-    year_el = soup.find("h2", class_=lambda c: c and c.startswith("BorderedTitle"))
-    yyyy = ""
-    if year_el:
-        text = year_el.get_text(strip=True)
-        import re
-
-        m = re.match(r"(\d{4})年", text)
-        if m:
-            yyyy = m.group(1)
-
-    for li in news_list.find_all(
-        "li", class_=lambda c: c and c.startswith("News__Row")
-    ):
+    for art in articles:
         # 日付
-        date_el = li.find(
-            "span", class_=lambda c: c and c.startswith("News__DateColumn")
-        )
+        date_el = art.select_one("time.news__date")
         # タイトル
-        title_el = li.find(
-            "span", class_=lambda c: c and c.startswith("News__TextContent")
-        )
-        # リンク
-        link_el = li.find("a", href=True)
+        title_el = art.select_one("h3.news__title")
+        # PDFリンク
+        link_el = art.select_one("a[href]")
 
         if not (date_el and title_el and link_el):
             continue
@@ -56,9 +39,9 @@ def parse_news(
         raw_date = date_el.get_text(strip=True)
         raw_title = title_el.get_text(strip=True)
         raw_link = link_el["href"]
-        raw_date = f"{yyyy}年{raw_date}"
-
-        # adj_dlt で正規化
+        # print(raw_date, raw_title, raw_link)
+        # Aflac のリンクは /static/... なので company_url を使って絶対URL化
+        # adj_dlt が内部で絶対URL化するのでそのまま渡してOK
         date, link, title = adj_dlt(
             raw_date,
             raw_link,
@@ -100,41 +83,23 @@ def parse_info(
     soup = BeautifulSoup(html, "html.parser")
     results: list[NewsItem] = []
 
-    info_list = soup.find("ul", class_=lambda c: c and c.startswith("Info__Table"))
-    if not info_list:
+    # Aflac お知らせ一覧は ul.toipcsFlex > li > dl
+    items = soup.select("ul.toipcsFlex > li > dl")
+    if not items:
         return results
 
-    # 年度取得（ニュースと同じロジック）
-    year_el = soup.find("h2", class_=lambda c: c and c.startswith("BorderedTitle"))
-    yyyy = ""
-    if year_el:
-        import re
+    for dl in items:
+        date_el = dl.select_one("dt")
+        link_el = dl.select_one("dd a[href]")
 
-        m = re.match(r"(\d{4})年", year_el.get_text(strip=True))
-        if m:
-            yyyy = m.group(1)
-
-    for li in info_list.find_all(
-        "li", class_=lambda c: c and c.startswith("Info__Row")
-    ):
-        date_el = li.find(
-            "span", class_=lambda c: c and c.startswith("Info__DateColumn")
-        )
-        title_el = li.find(
-            "span", class_=lambda c: c and c.startswith("Info__TextContent")
-        )
-        link_el = li.find("a", href=True)
-
-        if not (date_el and title_el and link_el):
+        if not (date_el and link_el):
             continue
 
         raw_date = date_el.get_text(strip=True)
-        raw_title = title_el.get_text(strip=True)
+        raw_title = link_el.get_text(strip=True)
         raw_link = link_el["href"]
 
-        raw_date = f"{yyyy}年{raw_date}"
-
-        # adj_dlt で正規化
+        # adj_dlt で正規化（AXA と同じ処理）
         date, link, title = adj_dlt(
             raw_date,
             raw_link,
@@ -151,7 +116,7 @@ def parse_info(
                 company_url=company_url,
                 url_type=url_type,
                 url=url,
-                article_type="重要なお知らせ",
+                article_type="お知らせ",
                 article_date=date,
                 article_title=title,
                 article_url=link,

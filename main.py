@@ -1,28 +1,68 @@
+# -----------------------------
+# ① 標準ライブラリ
+# -----------------------------
 import csv
+import json
+import pkgutil
 import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+# -----------------------------
+# ② プロジェクト内 import
+# -----------------------------
+import app.parsers as parsers_pkg
 from app.fetcher import fetch_html
 from app.models import NewsItem
-from app.parsers import axa_parser
-
-# util
 from utils.csv_utils import load_csv, write_csv
 from utils.file_utils import backup_file
 
+# -----------------------------
+# ③ グローバル設定
+# -----------------------------
+encoding = "utf-8"
 DATA_INPUT_DIR = Path("data/input")
 DATA_OUTPUT_DIR = Path("data/output")
-encoding = "utf-8"
 
-mapping = {
-    "Axa": axa_parser.parse,
-}
+# -----------------------------
+# ④ parser 自動ロード
+# -----------------------------
+PARSER_MODULES = {}
+
+for loader, module_name, is_pkg in pkgutil.iter_modules(parsers_pkg.__path__):
+    module = __import__(f"app.parsers.{module_name}", fromlist=[module_name])
+    PARSER_MODULES[module_name] = module
 
 
 # -----------------------------
-# mode 正規化（T/F/True/False 全対応）
+# ⑤ resolve_parser
+# -----------------------------
+def resolve_parser(path: str):
+    """
+    "axa_parser.parse_news" のような文字列を
+    実際の Python 関数に変換する。
+    """
+    module_name, func_name = path.split(".")
+    module = PARSER_MODULES[module_name]
+    return getattr(module, func_name)
+
+
+# -----------------------------
+# ⑥ mapping.json 読み込み
+# -----------------------------
+mapping_path = Path("config/mapping.json")
+mapping_json = json.loads(mapping_path.read_text(encoding=encoding))
+
+mapping = {}
+for company_id, types in mapping_json.items():
+    mapping[company_id] = {}
+    for url_type, parser_path in types.items():
+        mapping[company_id][url_type] = resolve_parser(parser_path)
+
+
+# -----------------------------
+# ⑦ 以下、既存の関数群
 # -----------------------------
 def normalize_mode(value: str) -> str:
     v = value.strip().lower()
@@ -33,9 +73,6 @@ def normalize_mode(value: str) -> str:
     return ""
 
 
-# -----------------------------
-# 会社情報読み込み
-# -----------------------------
 def load_companies():
     companies = {}
     with open(DATA_INPUT_DIR / "companies.csv", encoding=encoding) as f:
@@ -45,9 +82,6 @@ def load_companies():
     return companies
 
 
-# -----------------------------
-# URL 情報読み込み
-# -----------------------------
 def load_urls(entry_mode: str) -> list[dict]:
     urls = []
     with open(DATA_INPUT_DIR / "urls.csv", encoding=encoding) as f:
@@ -58,6 +92,9 @@ def load_urls(entry_mode: str) -> list[dict]:
                 continue
 
             company_id = row["company_id"]
+            if company_id.startswith("#"):
+                continue
+
             url_type = row["url_type"]
             url = row["url"]
 
@@ -68,9 +105,6 @@ def load_urls(entry_mode: str) -> list[dict]:
     return urls
 
 
-# -----------------------------
-# url_id 生成
-# -----------------------------
 def generate_url_id(company_id: str, url_type: str, url: str) -> str:
     parsed = urlparse(url=url)
     path = parsed.path.strip("/")
@@ -78,24 +112,11 @@ def generate_url_id(company_id: str, url_type: str, url: str) -> str:
     return f"{company_id}@{url_type}@{normalized_path}"
 
 
-# -----------------------------
-# 年度抽出
-# -----------------------------
 def extract_year_from_url(url: str) -> str:
     m = re.search(r"(20\d{2})", url)
     return m.group(1) if m else "0000"
 
 
-# -----------------------------
-# parser 選択
-# -----------------------------
-def select_parser(company_id):
-    return mapping.get(company_id)
-
-
-# -----------------------------
-# URL 一括スクレイピング（関数化）
-# -----------------------------
 def scrape_urls(urls: list[dict], companies: dict) -> list[NewsItem]:
     all_results = []
     total = len(urls)
@@ -110,15 +131,16 @@ def scrape_urls(urls: list[dict], companies: dict) -> list[NewsItem]:
         company_name = companies[company_id]["company_name"]
         company_url = companies[company_id]["company_url"]
 
-        # ★ 進捗表示
         print(f"[{idx}/{total}] Scraping {company_name} ({url_type}) → {url}")
 
-        parser_func = select_parser(company_id)
+        parser_func = mapping[company_id][url_type]
         if not parser_func:
             print(f"  → parser not found for {company_id}, skipped")
             continue
 
-        html = fetch_html(url)
+        html = fetch_html(url=url, company_id=company_id)
+        with open(".debug.html", "w", encoding=encoding) as f:
+            f.write(html)
 
         results = parser_func(
             html=html,
@@ -136,9 +158,6 @@ def scrape_urls(urls: list[dict], companies: dict) -> list[NewsItem]:
     return all_results
 
 
-# -----------------------------
-# True/False 結果保存
-# -----------------------------
 def save_results(results: list[NewsItem], entry_mode: str):
     output_file = DATA_OUTPUT_DIR / f"scraped_results_{entry_mode}.csv"
 
@@ -163,15 +182,11 @@ def save_results(results: list[NewsItem], entry_mode: str):
     write_csv(output_file, rows)
 
 
-# -----------------------------
-# マージ処理（バックアップ＋差分 is_new）
-# -----------------------------
 def merge_results_daily():
     true_file = DATA_OUTPUT_DIR / "scraped_results_True.csv"
     false_file = DATA_OUTPUT_DIR / "scraped_results_False.csv"
     merged_file = DATA_OUTPUT_DIR / "scraped_results_merged.csv"
 
-    # ★ 既存 merged をバックアップ
     backup_file(merged_file)
 
     true_rows = load_csv(true_file)
@@ -179,12 +194,10 @@ def merge_results_daily():
 
     merged_dict = {}
 
-    # 過去データは is_new=False
     for row in false_rows:
         row["is_new"] = "False"
         merged_dict[row["article_url"]] = row
 
-    # 最新データは差分判定
     for row in true_rows:
         url = row["article_url"]
         if url in merged_dict:
@@ -200,9 +213,6 @@ def merge_results_daily():
     print("Merged file created:", merged_file)
 
 
-# -----------------------------
-# メイン処理（スクレイピング → マージ）
-# -----------------------------
 def main():
     if len(sys.argv) < 2:
         print("mode を指定してください（T / F / True / False）")
@@ -218,15 +228,12 @@ def main():
     companies = load_companies()
     urls = load_urls(entry_mode=entry_mode)
 
-    # ★ スクレイピング処理（関数化）
     all_results = scrape_urls(urls, companies)
 
     save_results(results=all_results, entry_mode=entry_mode)
     print("Scraping completed.")
 
-    # ★ スクレイピング後に毎日マージ
     merge_results_daily()
-
     print("Merge completed.")
 
 

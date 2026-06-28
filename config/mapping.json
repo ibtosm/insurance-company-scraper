@@ -1,0 +1,14 @@
+{
+  "Axa": {
+    "ニュースリリース": "axa_parser.parse_news",
+    "重要なお知らせ": "axa_parser.parse_info"
+  },
+  "Aflac": {
+    "ニュースリリース": "aflac_parser.parse_news",
+    "お知らせ": "aflac_parser.parse_info"
+  },
+  "Fwdlife": {
+  "ニュースリリース": "fwdlife_parser.parse_press"
+}
+
+}
