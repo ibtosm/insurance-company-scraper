@@ -12,3 +12,4 @@ wheels/
 # dev environments
 .debug.html
 .test.py
+data/output/
